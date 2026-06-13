@@ -17,17 +17,14 @@ class Settings(BaseSettings):
     SPREADSHEET_ID: str = ""
 
     # Nomes das abas no Sheets
-    SHEET_CANDIDATOS: str = "Candidatos"
+    SHEET_CAMPANHAS: str = "Campanhas"
+    SHEET_DESTINATARIOS: str = "Destinatarios"
     SHEET_AGENDAMENTOS: str = "Agendamentos"
     SHEET_LOG: str = "Log"
-    SHEET_CONFIG: str = "Configuracoes"
-
-    # Scheduler — horários (formato HH:MM, fuso America/Sao_Paulo)
-    SCHEDULER_SYNC_ERP_TIME: str = "06:00"
-    SCHEDULER_DISPATCH_TIME: str = "08:00"
 
     # Intervalo entre mensagens em lote (segundos)
-    BATCH_SEND_INTERVAL: int = 3
+    # 20s é o mínimo recomendado para evitar bloqueio da Meta
+    BATCH_SEND_INTERVAL: int = 20
 
     # SQLite
     SQLITE_PATH: str = "db/conversations.db"

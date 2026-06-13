@@ -1,354 +1,249 @@
-const API = window.location.origin + '/api';
-let TOKEN = localStorage.getItem('adm_token') || '';
-let allCandidatos = [];
-let allAgendamentos = [];
-let allLogs = [];
+/* ============================================================
+   Admissional Bot — Frontend SPA
+   Lógica de autenticação, navegação, campanhas, envio avulso e logs.
+   ============================================================ */
 
-// ── AUTH ────────────────────────────────────────────────────────────────────
+const API = "";          // mesma origem — FastAPI serve o HTML e a API
+let TOKEN = localStorage.getItem("token") || "";
 
+// ── Inicialização ─────────────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  if (TOKEN) {
+    showApp();
+    loadCampanhas();
+  }
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
 async function doLogin() {
-  const user = document.getElementById('login-user').value.trim();
-  const pass = document.getElementById('login-pass').value.trim();
-  const err  = document.getElementById('login-error');
-  err.style.display = 'none';
+  const user = document.getElementById("login-user").value.trim();
+  const pass = document.getElementById("login-pass").value;
+  const errEl = document.getElementById("login-error");
+  errEl.style.display = "none";
 
   try {
-    const res = await apiFetch('/auth/login', 'POST', { username: user, password: pass }, false);
-    TOKEN = res.token;
-    localStorage.setItem('adm_token', TOKEN);
+    const res = await fetch(`${API}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    if (!res.ok) throw new Error("Credenciais inválidas");
+    const data = await res.json();
+    TOKEN = data.token;
+    localStorage.setItem("token", TOKEN);
     showApp();
+    loadCampanhas();
   } catch (e) {
-    err.textContent = 'Usuário ou senha inválidos.';
-    err.style.display = 'block';
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
   }
 }
 
 function logout() {
-  TOKEN = '';
-  localStorage.removeItem('adm_token');
-  document.getElementById('app').style.display = 'none';
-  document.getElementById('login-screen').style.display = 'flex';
+  TOKEN = "";
+  localStorage.removeItem("token");
+  document.getElementById("app").style.display = "none";
+  document.getElementById("login-screen").style.display = "flex";
 }
 
 function showApp() {
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('app').style.display = 'flex';
-  loadDashboard();
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("app").style.display = "flex";
 }
 
-// ── API ──────────────────────────────────────────────────────────────────────
-
-async function apiFetch(path, method = 'GET', body = null, auth = true) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (auth && TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
-  const opts = { method, headers };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(API + path, opts);
-  if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// ── NAVIGATION ───────────────────────────────────────────────────────────────
-
-function navigate(el) {
-  event.preventDefault();
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  el.classList.add('active');
-  const page = el.dataset.page;
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('page-' + page).classList.add('active');
-  if (page === 'dashboard')    loadDashboard();
-  if (page === 'candidatos')   loadCandidatos();
-  if (page === 'agendamentos') loadAgendamentos();
-  if (page === 'disparos')     loadDispatchPreview();
-  if (page === 'logs')         loadLogs();
-}
-
-// ── DASHBOARD ────────────────────────────────────────────────────────────────
-
-async function loadDashboard() {
-  try {
-    const data = await apiFetch('/dashboard');
-    renderMetrics(data.metrics);
-    renderDashTable(data.proximos);
-  } catch (e) {
-    toast('Erro ao carregar dashboard: ' + e.message, true);
-  }
-}
-
-function renderMetrics(m) {
-  const grid = document.getElementById('metrics-grid');
-  grid.innerHTML = `
-    <div class="metric-card">
-      <div class="metric-label">Total de candidatos</div>
-      <div class="metric-value">${m.total}</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Pendentes</div>
-      <div class="metric-value warning">${m.pendentes}</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Agendados</div>
-      <div class="metric-value accent">${m.agendados}</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Realizados</div>
-      <div class="metric-value success">${m.realizados}</div>
-    </div>
-  `;
-}
-
-function renderDashTable(rows) {
-  const tbody = document.getElementById('dash-tbody');
-  if (!rows || rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty">Nenhuma admissão nos próximos 7 dias.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = rows.map(r => `
-    <tr>
-      <td>${r.nome || ''}</td>
-      <td>${r.cargo || ''}</td>
-      <td>${r.data_admissao || ''}</td>
-      <td>${badge(r.status)}</td>
-    </tr>
-  `).join('');
-}
-
-// ── CANDIDATOS ───────────────────────────────────────────────────────────────
-
-async function loadCandidatos() {
-  try {
-    allCandidatos = await apiFetch('/candidatos');
-    renderCandidatos(allCandidatos);
-  } catch (e) {
-    toast('Erro ao carregar candidatos: ' + e.message, true);
-  }
-}
-
-function renderCandidatos(rows) {
-  const tbody = document.getElementById('cand-tbody');
-  if (!rows || rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">Nenhum candidato encontrado.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = rows.map((r, i) => `
-    <tr>
-      <td>${r.nome || ''}</td>
-      <td>${r.cpf || ''}</td>
-      <td>${r.telefone || ''}</td>
-      <td>${r.cargo || ''}</td>
-      <td>${r.data_admissao || ''}</td>
-      <td>${badge(r.status)}</td>
-      <td>
-        <div class="actions">
-          <button class="btn btn-sm btn-outline" onclick='editCandidato(${JSON.stringify(r)}, ${i})'>
-            <i class="ti ti-edit"></i>
-          </button>
-          <button class="btn btn-sm btn-outline" onclick="deleteCandidato(${i})" style="color:var(--danger)">
-            <i class="ti ti-trash"></i>
-          </button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
-}
-
-function filterCandidatos() {
-  const q = document.getElementById('search-candidatos').value.toLowerCase();
-  const s = document.getElementById('filter-status-cand').value;
-  const filtered = allCandidatos.filter(r => {
-    const match = !q || (r.nome||'').toLowerCase().includes(q)
-      || (r.cpf||'').includes(q) || (r.cargo||'').toLowerCase().includes(q);
-    const statusMatch = !s || r.status === s;
-    return match && statusMatch;
-  });
-  renderCandidatos(filtered);
-}
-
-function openModal(id) {
-  document.getElementById(id).style.display = 'flex';
-}
-function closeModal(id) {
-  document.getElementById(id).style.display = 'none';
-}
-
-function editCandidato(r, idx) {
-  document.getElementById('modal-cand-title').textContent = 'Editar candidato';
-  document.getElementById('cand-row-index').value = idx;
-  document.getElementById('cand-nome').value     = r.nome || '';
-  document.getElementById('cand-cpf').value      = r.cpf || '';
-  document.getElementById('cand-telefone').value = r.telefone || '';
-  document.getElementById('cand-cargo').value    = r.cargo || '';
-  document.getElementById('cand-gestor').value   = r.gestor || '';
-  document.getElementById('cand-data').value     = r.data_admissao || '';
-  document.getElementById('cand-status').value   = r.status || 'pendente';
-  openModal('modal-candidato');
-}
-
-async function saveCandidato() {
-  const idx = document.getElementById('cand-row-index').value;
-  const payload = {
-    nome:         document.getElementById('cand-nome').value.trim(),
-    cpf:          document.getElementById('cand-cpf').value.trim(),
-    telefone:     document.getElementById('cand-telefone').value.trim(),
-    cargo:        document.getElementById('cand-cargo').value.trim(),
-    gestor:       document.getElementById('cand-gestor').value.trim(),
-    data_admissao: document.getElementById('cand-data').value.trim(),
-    status:       document.getElementById('cand-status').value,
-  };
-  try {
-    if (idx === '') {
-      await apiFetch('/candidatos', 'POST', payload);
-      toast('Candidato adicionado.');
-    } else {
-      await apiFetch('/candidatos/' + idx, 'PUT', payload);
-      toast('Candidato atualizado.');
-    }
-    closeModal('modal-candidato');
-    loadCandidatos();
-  } catch (e) {
-    toast('Erro ao salvar: ' + e.message, true);
-  }
-}
-
-async function deleteCandidato(idx) {
-  if (!confirm('Remover este candidato da planilha?')) return;
-  try {
-    await apiFetch('/candidatos/' + idx, 'DELETE');
-    toast('Candidato removido.');
-    loadCandidatos();
-  } catch (e) {
-    toast('Erro ao remover: ' + e.message, true);
-  }
-}
-
-// ── AGENDAMENTOS ─────────────────────────────────────────────────────────────
-
-async function loadAgendamentos() {
-  try {
-    allAgendamentos = await apiFetch('/agendamentos');
-    renderAgendamentos(allAgendamentos);
-  } catch (e) {
-    toast('Erro ao carregar agendamentos: ' + e.message, true);
-  }
-}
-
-function renderAgendamentos(rows) {
-  const tbody = document.getElementById('agend-tbody');
-  if (!rows || rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">Nenhum agendamento encontrado.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = rows.map(r => `
-    <tr>
-      <td>${r.telefone || ''}</td>
-      <td>${r.data || ''}</td>
-      <td>${r.horario || ''}</td>
-      <td>${r.local || ''}</td>
-      <td>${badge(r.status)}</td>
-      <td style="color:var(--text-2)">${r.criado_em || ''}</td>
-    </tr>
-  `).join('');
-}
-
-function filterAgendamentos() {
-  const q = document.getElementById('search-agend').value.toLowerCase();
-  const s = document.getElementById('filter-status-agend').value;
-  const filtered = allAgendamentos.filter(r => {
-    const match = !q || (r.telefone||'').includes(q);
-    const statusMatch = !s || r.status === s;
-    return match && statusMatch;
-  });
-  renderAgendamentos(filtered);
-}
-
-// ── DISPAROS ─────────────────────────────────────────────────────────────────
-
-async function loadDispatchPreview() {
-  const el = document.getElementById('dispatch-preview');
-  el.innerHTML = '<span class="skeleton-line"></span>';
-  try {
-    const data = await apiFetch('/dispatch/preview');
-    el.textContent = `${data.count} candidato(s) serão notificados.`;
-  } catch (e) {
-    el.textContent = 'Não foi possível carregar a prévia.';
-  }
-}
-
-async function runDispatch() {
-  const result = document.getElementById('dispatch-result');
-  result.innerHTML = '<span style="color:var(--text-2)">Disparando...</span>';
-  try {
-    const data = await apiFetch('/dispatch/run', 'POST');
-    result.innerHTML = `<div class="alert alert-success">${data.enviados} mensagem(ns) enviada(s), ${data.erros} erro(s).</div>`;
-    toast('Disparo concluído.');
-  } catch (e) {
-    result.innerHTML = `<div class="alert alert-danger">Erro: ${e.message}</div>`;
-  }
-}
-
-async function sendSingle() {
-  const phone = document.getElementById('single-phone').value.trim();
-  const msg   = document.getElementById('single-msg').value.trim();
-  const result = document.getElementById('single-result');
-  if (!phone || !msg) { toast('Preencha telefone e mensagem.', true); return; }
-  result.innerHTML = '<span style="color:var(--text-2)">Enviando...</span>';
-  try {
-    await apiFetch('/dispatch/single', 'POST', { phone, text: msg });
-    result.innerHTML = '<div class="alert alert-success">Mensagem enviada.</div>';
-    toast('Enviado.');
-  } catch (e) {
-    result.innerHTML = `<div class="alert alert-danger">Erro: ${e.message}</div>`;
-  }
-}
-
-// ── LOGS ──────────────────────────────────────────────────────────────────────
-
-async function loadLogs() {
-  try {
-    allLogs = await apiFetch('/logs');
-    const tbody = document.getElementById('logs-tbody');
-    if (!allLogs || allLogs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty">Nenhum log encontrado.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = allLogs.map(r => `
-      <tr>
-        <td style="white-space:nowrap;color:var(--text-2)">${r.criado_em || ''}</td>
-        <td>${r.telefone || ''}</td>
-        <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(r.mensagem||'').replace(/"/g,'&quot;')}">${r.mensagem || ''}</td>
-        <td>${badge(r.status)}</td>
-      </tr>
-    `).join('');
-  } catch (e) {
-    toast('Erro ao carregar logs: ' + e.message, true);
-  }
-}
-
-// ── HELPERS ───────────────────────────────────────────────────────────────────
-
-function badge(status) {
-  const s = (status || 'pendente').toLowerCase();
-  return `<span class="badge badge-${s}">${s}</span>`;
-}
-
-function toast(msg, isError = false) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.style.background = isError ? 'var(--danger)' : 'var(--text)';
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 3000);
-}
-
-// ── INIT ──────────────────────────────────────────────────────────────────────
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && document.getElementById('login-screen').style.display !== 'none') doLogin();
+// Enter no campo de senha dispara login
+document.addEventListener("DOMContentLoaded", () => {
+  const passEl = document.getElementById("login-pass");
+  if (passEl) passEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 });
 
-if (TOKEN) {
-  showApp();
-} else {
-  document.getElementById('login-screen').style.display = 'flex';
+// ── Navegação ─────────────────────────────────────────────────────────────────
+function navigate(el) {
+  document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
+  el.classList.add("active");
+
+  const page = el.dataset.page;
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.getElementById(`page-${page}`).classList.add("active");
+
+  if (page === "campanhas") loadCampanhas();
+  if (page === "logs")      loadLogs();
+}
+
+// ── Helpers HTTP ──────────────────────────────────────────────────────────────
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${TOKEN}`,
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) { logout(); throw new Error("Sessão expirada."); }
+  return res;
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function showToast(msg, type = "success") {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = `toast toast-${type} show`;
+  setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+// ── Badge de status ───────────────────────────────────────────────────────────
+const STATUS_BADGE = {
+  agendado:              "badge-warning",
+  executando:            "badge-info",
+  concluido:             "badge-success",
+  concluido_com_erros:   "badge-warning",
+  erro:                  "badge-danger",
+  enviado:               "badge-success",
+  pendente:              "badge-secondary",
+};
+
+function badge(status) {
+  const cls = STATUS_BADGE[String(status).toLowerCase()] || "badge-secondary";
+  return `<span class="badge ${cls}">${status}</span>`;
+}
+
+// ── Campanhas ─────────────────────────────────────────────────────────────────
+async function loadCampanhas() {
+  const tbody = document.getElementById("camp-tbody");
+  tbody.innerHTML = `<tr><td colspan="6" class="empty">Carregando...</td></tr>`;
+
+  try {
+    const res = await apiFetch("/api/campanhas");
+    if (!res.ok) throw new Error(`Erro ${res.status}`);
+    const campanhas = await res.json();
+
+    if (!campanhas.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">Nenhuma campanha encontrada. Crie uma na planilha.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = campanhas.map((c, idx) => `
+      <tr>
+        <td><code>${esc(c.id)}</code></td>
+        <td>${esc(c.nome)}</td>
+        <td>${esc(c.disparo_em)}</td>
+        <td>${badge(c.status)}</td>
+        <td>
+          <span class="counter">${c.total_pendentes}</span>
+        </td>
+        <td>
+          <button
+            class="btn btn-sm btn-primary"
+            onclick="dispararCampanha('${esc(c.id)}', this)"
+            ${["executando"].includes(c.status) ? "disabled" : ""}
+            title="Disparar agora (ignora o horário agendado)"
+          >
+            <i class="ti ti-player-play"></i> Disparar
+          </button>
+        </td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty error">${e.message}</td></tr>`;
+  }
+}
+
+async function dispararCampanha(campanha_id, btn) {
+  if (!confirm(`Disparar a campanha "${campanha_id}" agora para todos os destinatários pendentes?`)) return;
+
+  btn.disabled = true;
+  btn.innerHTML = `<i class="ti ti-loader ti-spin"></i> Enviando...`;
+
+  try {
+    const res = await apiFetch(`/api/campanhas/${encodeURIComponent(campanha_id)}/disparar`, {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Erro ${res.status}`);
+
+    showToast(
+      `Campanha "${data.campanha}": ${data.enviados}/${data.total} enviadas — status: ${data.status}`,
+      data.erros === 0 ? "success" : "warning"
+    );
+    await loadCampanhas();
+  } catch (e) {
+    showToast(e.message, "error");
+    btn.disabled = false;
+    btn.innerHTML = `<i class="ti ti-player-play"></i> Disparar`;
+  }
+}
+
+// ── Envio Avulso ──────────────────────────────────────────────────────────────
+async function sendSingle() {
+  const phone = document.getElementById("single-phone").value.trim();
+  const text  = document.getElementById("single-msg").value.trim();
+  const result = document.getElementById("single-result");
+  const btn = document.getElementById("btn-single-send");
+
+  if (!phone || !text) {
+    result.innerHTML = `<div class="alert alert-danger">Preencha o telefone e a mensagem.</div>`;
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = `<i class="ti ti-loader ti-spin"></i> Enviando...`;
+  result.innerHTML = "";
+
+  try {
+    const res = await apiFetch("/api/dispatch/single", {
+      method: "POST",
+      body: JSON.stringify({ phone, text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Falha no envio");
+
+    result.innerHTML = `<div class="alert alert-success"><i class="ti ti-check"></i> Mensagem enviada com sucesso.</div>`;
+    document.getElementById("single-phone").value = "";
+    document.getElementById("single-msg").value = "";
+    showToast("Mensagem enviada!");
+  } catch (e) {
+    result.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+    showToast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<i class="ti ti-send"></i> Enviar`;
+  }
+}
+
+// ── Logs ──────────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  const tbody = document.getElementById("logs-tbody");
+  tbody.innerHTML = `<tr><td colspan="4" class="empty">Carregando...</td></tr>`;
+
+  try {
+    const res = await apiFetch("/api/logs");
+    if (!res.ok) throw new Error(`Erro ${res.status}`);
+    const logs = await res.json();
+
+    if (!logs.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="empty">Nenhum log registrado ainda.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = logs.slice(0, 200).map(l => `
+      <tr>
+        <td>${esc(l.criado_em || "")}</td>
+        <td>${esc(l.telefone  || "")}</td>
+        <td class="msg-cell" title="${esc(l.mensagem || "")}">${esc((l.mensagem || "").substring(0, 60))}${(l.mensagem || "").length > 60 ? "…" : ""}</td>
+        <td>${badge(l.status || "")}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty error">${e.message}</td></tr>`;
+  }
+}
+
+// ── Utilitários ───────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

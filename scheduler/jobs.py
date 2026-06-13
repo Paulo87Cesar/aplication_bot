@@ -1,12 +1,22 @@
 """
-Jobs agendados:
-  - sync_erp: sincroniza candidatos do Silogica para o Sheets (diário às 06h)
-  - dispatch_notifications: envia mensagens para candidatos com admissão próxima (diário às 08h)
+Job único que roda a cada 5 minutos e verifica se existe alguma
+campanha agendada com disparo_em <= agora na aba Campanhas do Google Sheets.
+
+Fluxo:
+  1. Lê campanhas com status='agendado' e disparo_em no passado
+  2. Marca a campanha como 'executando'
+  3. Para cada destinatário pendente dessa campanha:
+       a. Normaliza o telefone (aceita formato nacional)
+       b. Substitui {nome} na mensagem
+       c. Envia via Evolution API
+       d. Aguarda BATCH_SEND_INTERVAL segundos (padrão 20s)
+       e. Atualiza status do destinatário → 'enviado' ou 'erro'
+  4. Atualiza status da campanha → 'concluido' ou 'erro'
 """
 import asyncio
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -15,142 +25,89 @@ logger = logging.getLogger(__name__)
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone="America/Sao_Paulo")
 
-    sync_h, sync_m = settings.SCHEDULER_SYNC_ERP_TIME.split(":")
     scheduler.add_job(
-        sync_erp,
-        trigger=CronTrigger(hour=int(sync_h), minute=int(sync_m)),
-        id="sync_erp",
-        replace_existing=True,
-    )
-
-    dispatch_h, dispatch_m = settings.SCHEDULER_DISPATCH_TIME.split(":")
-    scheduler.add_job(
-        dispatch_notifications,
-        trigger=CronTrigger(hour=int(dispatch_h), minute=int(dispatch_m)),
-        id="dispatch_notifications",
+        check_and_dispatch_campaigns,
+        trigger=IntervalTrigger(minutes=5),
+        id="check_campaigns",
         replace_existing=True,
     )
 
     scheduler.start()
-    logger.info(
-        f"Scheduler ativo: sync_erp às {settings.SCHEDULER_SYNC_ERP_TIME}, "
-        f"dispatch às {settings.SCHEDULER_DISPATCH_TIME}"
+    logger.info("Scheduler ativo: verificando campanhas a cada 5 minutos.")
+
+
+def check_and_dispatch_campaigns():
+    """
+    Verifica se existem campanhas prontas para disparo e executa o envio.
+    Roda a cada 5 minutos pelo APScheduler.
+    """
+    from sheets.client import (
+        get_campanhas_agendadas,
+        get_destinatarios_pendentes,
+        update_campanha_status,
+        update_destinatario_status,
+        log_message_sent,
+        normalize_phone,
     )
+    from bot.whatsapp import send_message
 
+    logger.info("Verificando campanhas agendadas...")
+    campanhas = get_campanhas_agendadas()
 
-def sync_erp():
-    """
-    Conecta ao banco do Silogica, executa query de candidatos
-    e atualiza a aba Candidatos no Sheets.
-
-    ATENÇÃO: preencha a query e a string de conexão com os dados do seu ambiente.
-    """
-    import pyodbc  # SQL Server — troque por psycopg2 se for PostgreSQL
-    from sheets.client import get_sheet
-    from config import settings
-
-    logger.info("Iniciando sincronização com o Silogica...")
-
-    QUERY = """
-        SELECT
-            nome,
-            cpf,
-            telefone_celular AS telefone,
-            cargo,
-            gestor,
-            data_admissao,
-            'pendente' AS status
-        FROM candidatos
-        WHERE data_admissao >= CAST(GETDATE() AS DATE)
-          AND status_processo NOT IN ('cancelado', 'desistencia')
-        ORDER BY data_admissao
-    """
-
-    # Conexão com o banco — edite a connection string
-    conn_str = (
-        "DRIVER={ODBC Driver 17 for SQL Server};"
-        "SERVER=SEU_SERVIDOR;"
-        "DATABASE=SEU_BANCO;"
-        "UID=SEU_USUARIO;"
-        "PWD=SUA_SENHA;"
-    )
-
-    try:
-        with pyodbc.connect(conn_str, timeout=10) as db_conn:
-            cursor = db_conn.cursor()
-            cursor.execute(QUERY)
-            columns = [col[0] for col in cursor.description]
-            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-        if not rows:
-            logger.info("Nenhum candidato novo encontrado no Silogica.")
-            return
-
-        sheet = get_sheet(settings.SHEET_CANDIDATOS)
-
-        # Limpa e reescreve a aba (mantenha o cabeçalho)
-        sheet.clear()
-        header = list(rows[0].keys())
-        sheet.append_row(header)
-        for row in rows:
-            sheet.append_row([str(v) if v is not None else "" for v in row.values()])
-
-        logger.info(f"Sync concluído: {len(rows)} candidatos gravados no Sheets.")
-
-    except Exception as e:
-        logger.error(f"Erro na sincronização com o Silogica: {e}", exc_info=True)
-
-
-def dispatch_notifications():
-    """
-    Lê candidatos com admissão nos próximos 3 dias e envia mensagem via WhatsApp.
-    """
-    import asyncio
-    from sheets.client import get_candidatos_para_notificar, log_message_sent
-    from bot.whatsapp import send_batch
-
-    logger.info("Iniciando disparo de notificações admissionais...")
-
-    candidatos = get_candidatos_para_notificar(days_ahead=3)
-    if not candidatos:
-        logger.info("Nenhum candidato para notificar hoje.")
+    if not campanhas:
+        logger.info("Nenhuma campanha para disparar agora.")
         return
 
-    messages = []
-    for c in candidatos:
-        nome = c.get("nome", "Candidato")
-        data = c.get("data_admissao", "")
-        cargo = c.get("cargo", "")
-        phone = str(c.get("telefone", "")).replace("+", "").replace(" ", "").replace("-", "")
+    for campanha in campanhas:
+        campanha_id = campanha.get("id")
+        campanha_row = campanha.get("_row")
+        nome_campanha = campanha.get("nome", campanha_id)
+        mensagem_template = campanha.get("mensagem", "")
 
-        if not phone:
+        logger.info(f"Iniciando disparo da campanha '{nome_campanha}' (id={campanha_id})")
+        update_campanha_status(campanha_row, "executando")
+
+        destinatarios = get_destinatarios_pendentes(campanha_id)
+        if not destinatarios:
+            logger.warning(f"Campanha '{nome_campanha}' sem destinatários pendentes.")
+            update_campanha_status(campanha_row, "concluido")
             continue
 
-        texto = (
-            f"Olá, {nome}! 👋\n\n"
-            f"Sua admissão para o cargo *{cargo}* está prevista para *{data}*.\n\n"
-            f"Precisamos agendar sua consulta admissional. "
-            f"Responda esta mensagem para iniciarmos o agendamento.\n\n"
-            f"Equipe de RH"
+        total = len(destinatarios)
+        erros = 0
+
+        loop = asyncio.new_event_loop()
+        try:
+            for i, dest in enumerate(destinatarios):
+                nome_dest = dest.get("nome", "")
+                phone_raw = str(dest.get("telefone", ""))
+                dest_row = dest.get("_row")
+
+                phone = normalize_phone(phone_raw)
+                texto = mensagem_template.replace("{nome}", nome_dest)
+
+                success = loop.run_until_complete(send_message(phone, texto))
+
+                status_dest = "enviado" if success else "erro"
+                update_destinatario_status(dest_row, status_dest)
+                log_message_sent(phone, texto, status_dest)
+
+                if not success:
+                    erros += 1
+                    logger.warning(f"Falha ao enviar para {phone} (campanha {campanha_id})")
+                else:
+                    logger.info(f"  [{i+1}/{total}] Enviado para {phone} ({nome_dest})")
+
+                # Aguarda o intervalo configurado entre cada envio (anti-ban)
+                if i < total - 1:
+                    loop.run_until_complete(asyncio.sleep(settings.BATCH_SEND_INTERVAL))
+
+        finally:
+            loop.close()
+
+        status_final = "concluido" if erros == 0 else ("erro" if erros == total else "concluido_com_erros")
+        update_campanha_status(campanha_row, status_final)
+        logger.info(
+            f"Campanha '{nome_campanha}' finalizada: "
+            f"{total - erros}/{total} enviados, {erros} erros. Status: {status_final}"
         )
-        messages.append({"phone": phone, "text": texto})
-
-    if not messages:
-        return
-
-    # Roda o envio assíncrono dentro do contexto síncrono do scheduler
-    loop = asyncio.new_event_loop()
-    try:
-        results = loop.run_until_complete(
-            send_batch(messages, interval_seconds=settings.BATCH_SEND_INTERVAL)
-        )
-    finally:
-        loop.close()
-
-    for r in results:
-        status = "enviado" if r["success"] else "erro"
-        msg = next((m["text"] for m in messages if m["phone"] == r["phone"]), "")
-        log_message_sent(r["phone"], msg, status)
-
-    enviados = sum(1 for r in results if r["success"])
-    logger.info(f"Disparo concluído: {enviados}/{len(results)} mensagens enviadas.")

@@ -1,6 +1,11 @@
 """
 Integração com Google Sheets via gspread.
 Todas as operações de leitura e escrita passam por aqui.
+
+Estrutura esperada na planilha:
+  Aba Campanhas:    id | nome | mensagem | disparo_em | status
+  Aba Destinatarios: campanha_id | nome | telefone | status
+  Aba Log:          criado_em | telefone | mensagem | status | resposta_api
 """
 import gspread
 import logging
@@ -32,76 +37,100 @@ def get_sheet(tab_name: str) -> gspread.Worksheet:
 
 
 # ---------------------------------------------------------------------------
-# Candidatos
+# Normalização de telefone
+# Aceita formato nacional (11999999999) e adiciona DDI 55 automaticamente.
+# Remove qualquer caractere não numérico antes de normalizar.
 # ---------------------------------------------------------------------------
 
-def get_candidato_by_phone(phone: str) -> dict | None:
-    """
-    Busca candidato pelo telefone na aba Candidatos.
-    Colunas esperadas: nome, cpf, telefone, cargo, gestor, data_admissao, status
-    """
-    try:
-        sheet = get_sheet(settings.SHEET_CANDIDATOS)
-        records = sheet.get_all_records()
-        phone_clean = phone.replace("+", "").replace(" ", "").replace("-", "")
-        for row in records:
-            row_phone = str(row.get("telefone", "")).replace("+", "").replace(" ", "").replace("-", "")
-            if row_phone == phone_clean:
-                return row
-        return None
-    except Exception as e:
-        logger.error(f"Erro ao buscar candidato por telefone {phone}: {e}", exc_info=True)
-        return None
+def normalize_phone(raw: str) -> str:
+    """Garante que o telefone esteja no formato internacional sem '+'."""
+    digits = "".join(filter(str.isdigit, str(raw)))
+    if digits.startswith("55") and len(digits) >= 12:
+        return digits
+    return "55" + digits
 
 
-def get_candidatos_para_notificar(days_ahead: int = 3) -> list[dict]:
+# ---------------------------------------------------------------------------
+# Campanhas
+# ---------------------------------------------------------------------------
+
+def get_campanhas_agendadas() -> list[dict]:
     """
-    Retorna candidatos com admissão nos próximos N dias e sem agendamento confirmado.
+    Retorna campanhas cujo status é 'agendado' e disparo_em <= agora.
+    O campo disparo_em deve estar no formato DD/MM/AAAA HH:MM.
     """
-    from datetime import timedelta
     try:
-        sheet = get_sheet(settings.SHEET_CANDIDATOS)
+        sheet = get_sheet(settings.SHEET_CAMPANHAS)
         records = sheet.get_all_records()
-        today = datetime.today().date()
-        limit = today + timedelta(days=days_ahead)
+        now = datetime.now()
         resultado = []
-        for row in records:
-            data_str = row.get("data_admissao", "")
-            status = str(row.get("status", "")).lower()
-            if status in ("agendado", "realizado", "cancelado"):
+        for i, row in enumerate(records, start=2):  # linha 2 = primeira linha de dados
+            if str(row.get("status", "")).lower() != "agendado":
                 continue
+            disparo_str = str(row.get("disparo_em", "")).strip()
             try:
-                data = datetime.strptime(data_str, "%d/%m/%Y").date()
-                if today <= data <= limit:
-                    resultado.append(row)
+                disparo_dt = datetime.strptime(disparo_str, "%d/%m/%Y %H:%M")
             except ValueError:
+                logger.warning(f"Campanha '{row.get('id')}' tem disparo_em inválido: '{disparo_str}'")
                 continue
+            if disparo_dt <= now:
+                resultado.append({**row, "_row": i})
         return resultado
     except Exception as e:
-        logger.error(f"Erro ao buscar candidatos para notificar: {e}", exc_info=True)
+        logger.error(f"Erro ao buscar campanhas agendadas: {e}", exc_info=True)
         return []
 
 
-# ---------------------------------------------------------------------------
-# Agendamentos
-# ---------------------------------------------------------------------------
+def get_destinatarios_pendentes(campanha_id: str) -> list[dict]:
+    """
+    Retorna destinatários com status 'pendente' para uma campanha específica.
+    """
+    try:
+        sheet = get_sheet(settings.SHEET_DESTINATARIOS)
+        records = sheet.get_all_records()
+        resultado = []
+        for i, row in enumerate(records, start=2):
+            if str(row.get("campanha_id", "")).strip() != str(campanha_id).strip():
+                continue
+            if str(row.get("status", "")).lower() != "pendente":
+                continue
+            resultado.append({**row, "_row": i})
+        return resultado
+    except Exception as e:
+        logger.error(f"Erro ao buscar destinatários da campanha {campanha_id}: {e}", exc_info=True)
+        return []
 
-def register_agendamento(phone: str, data: dict):
-    """
-    Registra um agendamento confirmado na aba Agendamentos.
-    """
-    sheet = get_sheet(settings.SHEET_AGENDAMENTOS)
-    now = datetime.now().strftime("%d/%m/%Y %H:%M")
-    row = [
-        phone,
-        data.get("data", ""),
-        data.get("horario", ""),
-        data.get("local", ""),
-        "confirmado",
-        now,
-    ]
-    sheet.append_row(row)
-    logger.info(f"Agendamento gravado no Sheets para {phone}")
+
+def update_campanha_status(row_index: int, status: str):
+    """Atualiza o campo 'status' de uma campanha pelo índice de linha na planilha."""
+    try:
+        sheet = get_sheet(settings.SHEET_CAMPANHAS)
+        headers = sheet.row_values(1)
+        col = headers.index("status") + 1  # gspread é 1-indexed
+        sheet.update_cell(row_index, col, status)
+    except Exception as e:
+        logger.error(f"Erro ao atualizar status da campanha (linha {row_index}): {e}", exc_info=True)
+
+
+def update_destinatario_status(row_index: int, status: str):
+    """Atualiza o campo 'status' de um destinatário pelo índice de linha na planilha."""
+    try:
+        sheet = get_sheet(settings.SHEET_DESTINATARIOS)
+        headers = sheet.row_values(1)
+        col = headers.index("status") + 1
+        sheet.update_cell(row_index, col, status)
+    except Exception as e:
+        logger.error(f"Erro ao atualizar status do destinatário (linha {row_index}): {e}", exc_info=True)
+
+
+def get_all_campanhas() -> list[dict]:
+    """Retorna todas as campanhas para exibição no painel."""
+    try:
+        sheet = get_sheet(settings.SHEET_CAMPANHAS)
+        return sheet.get_all_records()
+    except Exception as e:
+        logger.error(f"Erro ao listar campanhas: {e}", exc_info=True)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +139,7 @@ def register_agendamento(phone: str, data: dict):
 
 def log_message_sent(phone: str, message: str, status: str, api_response: str = ""):
     """
-    Registra cada mensagem enviada em lote na aba Log.
+    Registra cada mensagem enviada na aba Log.
     """
     try:
         sheet = get_sheet(settings.SHEET_LOG)

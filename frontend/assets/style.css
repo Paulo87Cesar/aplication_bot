@@ -194,6 +194,12 @@ td.empty { color: var(--text-3); text-align: center; padding: 2rem; }
   font-weight: 500;
   white-space: nowrap;
 }
+.badge-secondary { background: var(--surface-2); color: var(--text-2); }
+.badge-warning   { background: var(--warning-bg); color: #92400e; }
+.badge-info      { background: #eff6ff; color: #1e40af; }
+.badge-success   { background: var(--success-bg); color: #166534; }
+.badge-danger    { background: var(--danger-bg); color: #991b1b; }
+/* Aliases legados */
 .badge-pendente  { background: var(--warning-bg); color: #92400e; }
 .badge-agendado  { background: var(--accent-bg); color: var(--accent-text); }
 .badge-realizado { background: var(--success-bg); color: #166534; }
@@ -344,6 +350,52 @@ textarea { resize: vertical; }
   padding: 0.75rem 1rem;
   font-size: 13.5px;
   color: var(--text-2);
+}
+
+/* NEW ELEMENTS */
+.alert-info-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+  font-size: 13.5px;
+}
+.alert-info-box .ti {
+  font-size: 20px;
+}
+.label-hint {
+  font-weight: 400;
+  color: var(--text-3);
+  margin-left: 6px;
+}
+.counter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  padding: 0 8px;
+}
+.msg-cell {
+  max-width: 300px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ti-spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  100% { transform: rotate(360deg); }
 }
 
 /* TOAST */
