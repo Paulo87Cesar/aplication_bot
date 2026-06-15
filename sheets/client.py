@@ -65,9 +65,10 @@ def get_campanhas_agendadas() -> list[dict]:
     O campo disparo_em deve estar no formato DD/MM/AAAA HH:MM.
     """
     try:
+        from zoneinfo import ZoneInfo
         sheet = get_sheet(settings.SHEET_CAMPANHAS)
         records = sheet.get_all_records()
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("America/Sao_Paulo")).replace(tzinfo=None)
         resultado = []
         for i, raw_row in enumerate(records, start=2):  # linha 2 = primeira linha de dados
             row = _normalize_row(raw_row)
