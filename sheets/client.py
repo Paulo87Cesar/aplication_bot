@@ -54,6 +54,11 @@ def normalize_phone(raw: str) -> str:
 # Campanhas
 # ---------------------------------------------------------------------------
 
+def _normalize_row(row: dict) -> dict:
+    """Converte todas as chaves do dicionário para minúsculo."""
+    return {str(k).strip().lower(): v for k, v in row.items()}
+
+
 def get_campanhas_agendadas() -> list[dict]:
     """
     Retorna campanhas cujo status é 'agendado' e disparo_em <= agora.
@@ -64,15 +69,19 @@ def get_campanhas_agendadas() -> list[dict]:
         records = sheet.get_all_records()
         now = datetime.now()
         resultado = []
-        for i, row in enumerate(records, start=2):  # linha 2 = primeira linha de dados
+        for i, raw_row in enumerate(records, start=2):  # linha 2 = primeira linha de dados
+            row = _normalize_row(raw_row)
             if str(row.get("status", "")).lower() != "agendado":
                 continue
             disparo_str = str(row.get("disparo_em", "")).strip()
             try:
                 disparo_dt = datetime.strptime(disparo_str, "%d/%m/%Y %H:%M")
             except ValueError:
-                logger.warning(f"Campanha '{row.get('id')}' tem disparo_em inválido: '{disparo_str}'")
-                continue
+                try:
+                    disparo_dt = datetime.strptime(disparo_str, "%d/%m/%Y %H:%M:%S")
+                except ValueError:
+                    logger.warning(f"Campanha '{row.get('id')}' tem disparo_em inválido: '{disparo_str}'")
+                    continue
             if disparo_dt <= now:
                 resultado.append({**row, "_row": i})
         return resultado
@@ -89,8 +98,10 @@ def get_destinatarios_pendentes(campanha_id: str) -> list[dict]:
         sheet = get_sheet(settings.SHEET_DESTINATARIOS)
         records = sheet.get_all_records()
         resultado = []
-        for i, row in enumerate(records, start=2):
-            if str(row.get("campanha_id", "")).strip() != str(campanha_id).strip():
+        for i, raw_row in enumerate(records, start=2):
+            row = _normalize_row(raw_row)
+            camp_id = row.get("campanha_id") or row.get("id_campanha", "")
+            if str(camp_id).strip() != str(campanha_id).strip():
                 continue
             if str(row.get("status", "")).lower() != "pendente":
                 continue
@@ -105,7 +116,7 @@ def update_campanha_status(row_index: int, status: str):
     """Atualiza o campo 'status' de uma campanha pelo índice de linha na planilha."""
     try:
         sheet = get_sheet(settings.SHEET_CAMPANHAS)
-        headers = sheet.row_values(1)
+        headers = [h.strip().lower() for h in sheet.row_values(1)]
         col = headers.index("status") + 1  # gspread é 1-indexed
         sheet.update_cell(row_index, col, status)
     except Exception as e:
@@ -116,7 +127,7 @@ def update_destinatario_status(row_index: int, status: str):
     """Atualiza o campo 'status' de um destinatário pelo índice de linha na planilha."""
     try:
         sheet = get_sheet(settings.SHEET_DESTINATARIOS)
-        headers = sheet.row_values(1)
+        headers = [h.strip().lower() for h in sheet.row_values(1)]
         col = headers.index("status") + 1
         sheet.update_cell(row_index, col, status)
     except Exception as e:
@@ -127,7 +138,8 @@ def get_all_campanhas() -> list[dict]:
     """Retorna todas as campanhas para exibição no painel."""
     try:
         sheet = get_sheet(settings.SHEET_CAMPANHAS)
-        return sheet.get_all_records()
+        records = sheet.get_all_records()
+        return [_normalize_row(r) for r in records]
     except Exception as e:
         logger.error(f"Erro ao listar campanhas: {e}", exc_info=True)
         return []
