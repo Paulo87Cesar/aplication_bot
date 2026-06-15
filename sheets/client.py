@@ -71,7 +71,8 @@ def get_campanhas_agendadas() -> list[dict]:
         resultado = []
         for i, raw_row in enumerate(records, start=2):  # linha 2 = primeira linha de dados
             row = _normalize_row(raw_row)
-            if str(row.get("status", "")).lower() != "agendado":
+            status_camp = str(row.get("status", "")).lower()
+            if status_camp not in ("agendado", "pendente"):
                 continue
             disparo_str = str(row.get("disparo_em", "")).strip()
             try:
@@ -80,8 +81,14 @@ def get_campanhas_agendadas() -> list[dict]:
                 try:
                     disparo_dt = datetime.strptime(disparo_str, "%d/%m/%Y %H:%M:%S")
                 except ValueError:
-                    logger.warning(f"Campanha '{row.get('id')}' tem disparo_em inválido: '{disparo_str}'")
-                    continue
+                    try:
+                        disparo_dt = datetime.strptime(disparo_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        try:
+                            disparo_dt = datetime.strptime(disparo_str, "%Y-%m-%d %H:%M")
+                        except ValueError:
+                            logger.warning(f"Campanha '{row.get('id')}' tem disparo_em inválido: '{disparo_str}'")
+                            continue
             if disparo_dt <= now:
                 resultado.append({**row, "_row": i})
         return resultado
